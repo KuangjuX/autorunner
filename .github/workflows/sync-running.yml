@@ -1,0 +1,66 @@
+name: Sync Running Data
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2:00 AM UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout autorunner
+        uses: actions/checkout@v4
+
+      - name: Cache Rust toolchain and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build autorunner
+        run: cargo build --release
+
+      - name: Sync COROS running data
+        env:
+          COROS_ACCOUNT: ${{ secrets.COROS_ACCOUNT }}
+          COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
+        run: ./target/release/autorunner sync --output running_data.json
+
+      - name: Checkout website repo
+        uses: actions/checkout@v4
+        with:
+          repository: KuangjuX/KuangjuX.github.io
+          token: ${{ secrets.PERSONAL_TOKEN }}
+          path: website
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate running.js
+        run: python scripts/generate_running_js.py running_data.json website/js/data/running.js
+
+      - name: Commit and push to website
+        working-directory: website
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add js/data/running.js
+          if git diff --cached --quiet; then
+            echo "No changes to running data"
+          else
+            git commit -m "chore: update running data $(date -u +%Y-%m-%d)"
+            git push
+          fi
