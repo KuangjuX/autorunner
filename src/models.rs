@@ -98,11 +98,16 @@ pub fn build_output(
         .iter()
         .map(|raw| {
             let distance_km = raw.distance / 1000.0;
-            let duration_seconds = raw.duration as u64;
-            let pace_seconds_per_km = if distance_km > 0.0 {
-                duration_seconds as f64 / distance_km
+
+            // avg_speed from COROS is pace in seconds/km based on moving time.
+            // Use it to derive actual moving duration (excluding pauses at red lights, etc.).
+            let (duration_seconds, pace_seconds_per_km) = if raw.avg_speed > 0.0 && distance_km > 0.0 {
+                let moving_secs = (raw.avg_speed * distance_km).round() as u64;
+                (moving_secs, raw.avg_speed)
             } else {
-                0.0
+                let elapsed = raw.elapsed_time as u64;
+                let pace = if distance_km > 0.0 { elapsed as f64 / distance_km } else { 0.0 };
+                (elapsed, pace)
             };
 
             Activity {
@@ -231,6 +236,9 @@ pub struct RawActivity {
     pub sport_type: u32,
     pub start_time: u64,
     pub distance: f64,
-    pub duration: f64,
+    /// Wall-clock elapsed time (includes pauses).
+    pub elapsed_time: f64,
+    /// Average pace in seconds/km (based on moving time, excludes pauses).
+    pub avg_speed: f64,
     pub calorie: f64,
 }

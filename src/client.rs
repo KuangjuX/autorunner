@@ -47,6 +47,7 @@ struct ActivityItem {
     start_time: Option<u64>,
     distance: Option<f64>,
     total_time: Option<f64>,
+    avg_speed: Option<f64>,
     calorie: Option<f64>,
 }
 
@@ -170,7 +171,8 @@ impl CorosClient {
                     sport_type: item.sport_type.unwrap_or(100),
                     start_time: item.start_time.unwrap_or(0),
                     distance: item.distance.unwrap_or(0.0),
-                    duration: item.total_time.unwrap_or(0.0),
+                    elapsed_time: item.total_time.unwrap_or(0.0),
+                    avg_speed: item.avg_speed.unwrap_or(0.0),
                     calorie: item.calorie.unwrap_or(0.0),
                 });
             }
