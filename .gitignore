@@ -1,3 +1,5 @@
 /target
 .env
 running_data.json
+running.js
+website/js/data/running.js
