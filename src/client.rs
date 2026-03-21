@@ -1,11 +1,14 @@
 use anyhow::{bail, Context, Result};
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use reqwest::Client;
 use serde::Deserialize;
 
-use crate::models::RawActivity;
+use crate::models::{GpsPoint, RawActivity};
 
 const LOGIN_URL: &str = "https://teamcnapi.coros.com/account/login";
 const ACTIVITY_LIST_URL: &str = "https://teamcnapi.coros.com/activity/query";
+const ACTIVITY_DOWNLOAD_URL: &str = "https://teamcnapi.coros.com/activity/detail/download";
 const DASHBOARD_URL: &str = "https://teamcnapi.coros.com/dashboard/query";
 const PAGE_SIZE: u32 = 20;
 /// Only running-related sport types: outdoor(100), indoor(101), trail(102), track(103)
@@ -84,6 +87,18 @@ struct RaceScoreItem {
     pub race_type: Option<u32>,
     pub duration: Option<u64>,
     pub avg_pace: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct DownloadResponse {
+    data: Option<DownloadData>,
+    message: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadData {
+    file_url: String,
 }
 
 impl CorosClient {
@@ -273,4 +288,108 @@ impl CorosClient {
             race_predictions,
         })
     }
+
+    /// Download the GPX file for a single activity and parse it into GPS points.
+    pub async fn fetch_activity_route(
+        &self,
+        label_id: &str,
+        sport_type: u32,
+    ) -> Result<Vec<GpsPoint>> {
+        let resp = self
+            .http
+            .post(ACTIVITY_DOWNLOAD_URL)
+            .header("accesstoken", &self.access_token)
+            .header(
+                "cookie",
+                format!("CPL-coros-region=2; CPL-coros-token={}", self.access_token),
+            )
+            .query(&[
+                ("labelId", label_id),
+                ("sportType", &sport_type.to_string()),
+                ("fileType", "1"), // GPX
+            ])
+            .send()
+            .await
+            .with_context(|| format!("Failed to request GPX download for {label_id}"))?;
+
+        let dl: DownloadResponse = resp
+            .json()
+            .await
+            .with_context(|| format!("Failed to parse download response for {label_id}"))?;
+
+        let file_url = dl
+            .data
+            .map(|d| d.file_url)
+            .filter(|u| !u.is_empty())
+            .ok_or_else(|| {
+                let msg = dl.message.unwrap_or_else(|| "unknown error".to_string());
+                anyhow::anyhow!("GPX download failed for {label_id}: {msg}")
+            })?;
+
+        let gpx_bytes = self
+            .http
+            .get(&file_url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to download GPX file for {label_id}"))?
+            .bytes()
+            .await?;
+
+        let points = parse_gpx_points(&gpx_bytes)?;
+        Ok(points)
+    }
+}
+
+/// Extract lat/lon track points from GPX XML, down-sampling to keep at most
+/// ~200 points so the JSON stays compact.
+fn parse_gpx_points(gpx_bytes: &[u8]) -> Result<Vec<GpsPoint>> {
+    let mut reader = Reader::from_reader(gpx_bytes);
+    reader.config_mut().trim_text(true);
+
+    let mut points = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.name().as_ref() == b"trkpt" =>
+            {
+                let mut lat = None;
+                let mut lon = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"lat" => {
+                            lat = std::str::from_utf8(&attr.value)
+                                .ok()
+                                .and_then(|v| v.parse::<f64>().ok());
+                        }
+                        b"lon" => {
+                            lon = std::str::from_utf8(&attr.value)
+                                .ok()
+                                .and_then(|v| v.parse::<f64>().ok());
+                        }
+                        _ => {}
+                    }
+                }
+                if let (Some(lat), Some(lon)) = (lat, lon) {
+                    points.push(GpsPoint { lat, lon });
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => bail!("Error parsing GPX: {e}"),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if points.len() <= 200 {
+        return Ok(points);
+    }
+
+    let step = points.len() as f64 / 200.0;
+    let mut sampled: Vec<GpsPoint> = (0..199)
+        .map(|i| points[(i as f64 * step) as usize].clone())
+        .collect();
+    sampled.push(points.last().unwrap().clone());
+    Ok(sampled)
 }
