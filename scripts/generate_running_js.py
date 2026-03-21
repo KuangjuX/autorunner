@@ -40,6 +40,24 @@ PB_NAME_ZH = {
     "Marathon": "全程马拉松",
 }
 
+HIGHLIGHT_TAG_EN = {
+    "longest": "Longest Run",
+    "fastest": "Fastest Pace",
+    "pb_5k": "5K PB",
+    "pb_10k": "10K PB",
+    "pb_half": "Half Marathon PB",
+    "recent": "Most Recent",
+}
+
+HIGHLIGHT_TAG_ZH = {
+    "longest": "最长距离",
+    "fastest": "最快配速",
+    "pb_5k": "5公里最佳",
+    "pb_10k": "10公里最佳",
+    "pb_half": "半马最佳",
+    "recent": "最近一次",
+}
+
 
 def format_distance(km: float) -> str:
     if km >= 1000:
@@ -211,6 +229,36 @@ def build_pbs_zh(pbs: list) -> list:
     ]
 
 
+def build_highlights_en(routes: list) -> list:
+    return [
+        {
+            "tag": HIGHLIGHT_TAG_EN.get(r["tag"], r["tag"]),
+            "date": r["date"],
+            "distance": f"{format_distance(r['distance_km'])} km",
+            "duration": format_activity_duration(r["duration_seconds"]),
+            "pace": f"{r['pace_per_km']}/km",
+            "type": SPORT_TYPE_EN.get(r["sport_type"], "Run"),
+            "points": [[p["lat"], p["lon"]] for p in r["points"]],
+        }
+        for r in routes
+    ]
+
+
+def build_highlights_zh(routes: list) -> list:
+    return [
+        {
+            "tag": HIGHLIGHT_TAG_ZH.get(r["tag"], r["tag"]),
+            "date": r["date"],
+            "distance": f"{format_distance(r['distance_km'])} 公里",
+            "duration": format_activity_duration(r["duration_seconds"]),
+            "pace": f"{r['pace_per_km']}/公里",
+            "type": SPORT_TYPE_ZH.get(r["sport_type"], "跑步"),
+            "points": [[p["lat"], p["lon"]] for p in r["points"]],
+        }
+        for r in routes
+    ]
+
+
 def build_en(data: dict) -> dict:
     summary = data["summary"]
     result = {
@@ -257,6 +305,9 @@ def build_en(data: dict) -> dict:
     pbs = data.get("personal_bests", [])
     if pbs:
         result["personalBests"] = build_pbs_en(pbs)
+    routes = data.get("highlight_routes", [])
+    if routes:
+        result["highlightRoutes"] = build_highlights_en(routes)
     return result
 
 
@@ -306,6 +357,9 @@ def build_zh(data: dict) -> dict:
     pbs = data.get("personal_bests", [])
     if pbs:
         result["personalBests"] = build_pbs_zh(pbs)
+    routes = data.get("highlight_routes", [])
+    if routes:
+        result["highlightRoutes"] = build_highlights_zh(routes)
     return result
 
 
