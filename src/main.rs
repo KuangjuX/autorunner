@@ -70,7 +70,40 @@ async fn main() -> Result<()> {
             };
 
             println!("Processing data...");
-            let running_output = models::build_output(&raw_activities, dashboard);
+            let mut running_output = models::build_output(&raw_activities, dashboard);
+
+            let highlights = models::select_highlights(&running_output.activities);
+            if !highlights.is_empty() {
+                println!(
+                    "Fetching route maps for {} highlight activities...",
+                    highlights.len()
+                );
+                for (tag, idx) in &highlights {
+                    let activity = &running_output.activities[*idx];
+                    let label_id = activity.label_id.clone();
+                    let sport_type = activity.raw_sport_type;
+                    print!("  [{tag}] {} {} ... ", activity.date, activity.distance_km);
+
+                    match coros.fetch_activity_route(&label_id, sport_type).await {
+                        Ok(points) if !points.is_empty() => {
+                            println!("{} GPS points", points.len());
+                            running_output
+                                .highlight_routes
+                                .push(models::HighlightRoute {
+                                    tag: tag.clone(),
+                                    date: activity.date.clone(),
+                                    distance_km: activity.distance_km,
+                                    duration_seconds: activity.duration_seconds,
+                                    pace_per_km: activity.pace_per_km.clone(),
+                                    sport_type: activity.sport_type.clone(),
+                                    points,
+                                });
+                        }
+                        Ok(_) => println!("no GPS data"),
+                        Err(e) => println!("failed: {e}"),
+                    }
+                }
+            }
 
             output::write_json(&running_output, &output_path)?;
             output::print_summary(&running_output);
