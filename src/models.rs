@@ -10,6 +10,27 @@ pub struct Activity {
     pub pace_per_km: String,
     pub sport_type: String,
     pub calories: u32,
+    #[serde(skip_serializing)]
+    pub label_id: String,
+    #[serde(skip_serializing)]
+    pub raw_sport_type: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpsPoint {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightRoute {
+    pub tag: String,
+    pub date: String,
+    pub distance_km: f64,
+    pub duration_seconds: u64,
+    pub pace_per_km: String,
+    pub sport_type: String,
+    pub points: Vec<GpsPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +89,8 @@ pub struct RunningOutput {
     pub activities: Vec<Activity>,
     pub dashboard: Option<DashboardInfo>,
     pub personal_bests: Vec<PersonalBest>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub highlight_routes: Vec<HighlightRoute>,
     pub last_synced: String,
 }
 
@@ -117,6 +140,8 @@ pub fn build_output(
                 pace_per_km: format_pace(pace_seconds_per_km),
                 sport_type: sport_type_name(raw.sport_type).to_string(),
                 calories: (raw.calorie / 1000.0).round() as u32,
+                label_id: raw.label_id.clone(),
+                raw_sport_type: raw.sport_type,
             }
         })
         .collect();
@@ -134,6 +159,7 @@ pub fn build_output(
         activities,
         dashboard,
         personal_bests,
+        highlight_routes: Vec::new(),
         last_synced,
     }
 }
@@ -226,6 +252,74 @@ fn format_timestamp(timestamp_secs: u64) -> String {
     chrono::DateTime::from_timestamp(timestamp_secs as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Picks a small set of highlight activities worth fetching route maps for.
+/// Returns `(tag, activity_index)` pairs, deduplicated by label_id.
+pub fn select_highlights(activities: &[Activity]) -> Vec<(String, usize)> {
+    use std::collections::HashSet;
+
+    let outdoor: Vec<(usize, &Activity)> = activities
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.sport_type == "outdoor_run" || a.sport_type == "trail_run")
+        .collect();
+
+    if outdoor.is_empty() {
+        return Vec::new();
+    }
+
+    let mut picks: Vec<(String, usize)> = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut try_add = |tag: &str, idx: usize| {
+        if seen.insert(activities[idx].label_id.clone()) {
+            picks.push((tag.to_string(), idx));
+        }
+    };
+
+    // Longest distance
+    if let Some(&(idx, _)) = outdoor.iter().max_by(|a, b| {
+        a.1.distance_km
+            .partial_cmp(&b.1.distance_km)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) {
+        try_add("longest", idx);
+    }
+
+    // Fastest pace (only runs >= 3 km to avoid warm-up jogs)
+    if let Some(&(idx, _)) = outdoor
+        .iter()
+        .filter(|(_, a)| a.distance_km >= 3.0)
+        .min_by_key(|(_, a)| {
+            ((a.duration_seconds as f64 / a.distance_km) * 1000.0) as u64
+        })
+    {
+        try_add("fastest", idx);
+    }
+
+    // PB for standard race distances
+    let pb_targets = [
+        ("pb_5k", 5.0, 0.3),
+        ("pb_10k", 10.0, 0.5),
+        ("pb_half", 21.0975, 1.0),
+    ];
+    for (tag, target_km, tolerance) in pb_targets {
+        if let Some(&(idx, _)) = outdoor
+            .iter()
+            .filter(|(_, a)| (a.distance_km - target_km).abs() <= tolerance)
+            .min_by_key(|(_, a)| a.duration_seconds)
+        {
+            try_add(tag, idx);
+        }
+    }
+
+    // Most recent outdoor run
+    if let Some(&(idx, _)) = outdoor.first() {
+        try_add("recent", idx);
+    }
+
+    picks
 }
 
 /// Raw activity data as returned by the COROS API.
